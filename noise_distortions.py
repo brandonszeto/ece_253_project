@@ -6,7 +6,7 @@
 			img_path = directory path to image
 			noise_type = 1:apply AWGN, 2:apply SaltPepper
 			(optional/default) mean, std = AWGN parameters
-		returns distorted image as np.uint8
+		returns distorted image as np.ndarray
 
 """
 
@@ -61,7 +61,7 @@ def add_saltpepper(image, amount=0.05):
 	return sp_img
 
 
-# Returns noise_type distorted image as np.uint8
+# Returns noise_type distorted image as np.ndarray
 # noise_type 1: AWGN, 2: S&P, optionally adjust mean, std if noise_type 1
 def distort_img(image_path, noise_type, mean = 0, std = 20):
 	# Load the image (given img path)

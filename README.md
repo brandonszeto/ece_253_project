@@ -119,7 +119,7 @@ data/
 
 ### Data Download Links
 
-*[To be added: Links to download the dataset]*
+[Download Dataset](https://drive.google.com/drive/folders/1svCqcNgnudxJ4vbKvtEfXd0NcTlUKKxa?usp=share_link)
 
 ## Pretrained Models
 

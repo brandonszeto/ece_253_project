@@ -312,6 +312,194 @@ def predict(
             print(f"  {CLASS_NAMES[i]:>8}: {p.item() * 100:.1f}%")
 
 
+def compare_distorted_images(model_path: Path, data_dir: Path, distorted_dir: Path):
+    """
+    Compare first image from each class with its distorted variants (AWGN, Sim, SP).
+
+    Args:
+        model_path: Path to trained model
+        data_dir: Path to data directory containing class subdirectories
+        distorted_dir: Path to distorted directory containing class/distortion subdirectories
+    """
+    device = get_device()
+    transform = get_eval_transform()
+
+    # Load model
+    model = get_model(device=device, freeze_features=True)
+    state_dict = torch.load(model_path, map_location=device)
+    model.load_state_dict(state_dict)
+    model.eval()
+
+    # Distortion types and their suffixes
+    distortion_mappings = {
+        "AWGN": "_noise1",
+        "Sim": "_sim",
+        "SP": "_noise2"
+    }
+
+    # Process each class
+    for class_name in CLASS_NAMES:
+        print(f"\n{'='*70}")
+        print(f"Processing class: {class_name.upper()}")
+        print(f"{'='*70}")
+
+        # Find first image in data/{class}/
+        class_dir = data_dir / class_name
+        if not class_dir.exists():
+            print(f"Warning: Class directory {class_dir} does not exist, skipping")
+            continue
+
+        # Get first image
+        image_files = sorted(
+            list(class_dir.glob("*.jpg"))
+            + list(class_dir.glob("*.png"))
+            + list(class_dir.glob("*.jpeg"))
+        )
+
+        if not image_files:
+            print(f"Warning: No images found in {class_dir}, skipping")
+            continue
+
+        original_path = image_files[0]
+        img_basename = original_path.stem  # e.g., "IMG_0283"
+        img_ext = original_path.suffix  # e.g., ".jpeg"
+
+        print(f"Original image: {original_path.name}")
+
+        # Find corresponding distorted images
+        distorted_paths = {}
+        distorted_class_dir = distorted_dir / class_name
+
+        for dist_type, suffix in distortion_mappings.items():
+            dist_subdir = distorted_class_dir / dist_type
+            if not dist_subdir.exists():
+                print(f"Warning: Distortion directory {dist_subdir} does not exist")
+                distorted_paths[dist_type] = None
+                continue
+
+            # Look for image with expected suffix
+            expected_name = f"{img_basename}{suffix}{img_ext}"
+            dist_path = dist_subdir / expected_name
+
+            if dist_path.exists():
+                distorted_paths[dist_type] = dist_path
+                print(f"  {dist_type:4s}: {dist_path.name}")
+            else:
+                print(f"  {dist_type:4s}: NOT FOUND (expected {expected_name})")
+                distorted_paths[dist_type] = None
+
+        # Run inference on all versions
+        results = {}
+
+        # Original image
+        img_orig = Image.open(original_path).convert("RGB")
+        x_orig = transform(img_orig).unsqueeze(0).to(device)
+        with torch.no_grad():
+            logits_orig = model(x_orig)
+            probs_orig = F.softmax(logits_orig, dim=1)[0]
+            conf_orig, idx_orig = probs_orig.max(dim=0)
+
+        results["Original"] = {
+            "image": img_orig,
+            "probs": probs_orig.cpu().numpy(),
+            "pred_idx": idx_orig.item(),
+            "confidence": conf_orig.item()
+        }
+
+        print(f"\nPredictions:")
+        print(f"  Original: {CLASS_NAMES[idx_orig.item()]} ({conf_orig.item() * 100:.1f}%)")
+
+        # Distorted images
+        for dist_type in ["AWGN", "Sim", "SP"]:
+            if distorted_paths[dist_type] is not None:
+                img_dist = Image.open(distorted_paths[dist_type]).convert("RGB")
+                x_dist = transform(img_dist).unsqueeze(0).to(device)
+                with torch.no_grad():
+                    logits_dist = model(x_dist)
+                    probs_dist = F.softmax(logits_dist, dim=1)[0]
+                    conf_dist, idx_dist = probs_dist.max(dim=0)
+
+                results[dist_type] = {
+                    "image": img_dist,
+                    "probs": probs_dist.cpu().numpy(),
+                    "pred_idx": idx_dist.item(),
+                    "confidence": conf_dist.item()
+                }
+
+                conf_drop = (conf_orig.item() - conf_dist.item()) * 100
+                print(f"  {dist_type:4s}:     {CLASS_NAMES[idx_dist.item()]} ({conf_dist.item() * 100:.1f}%) [Δ: {conf_drop:+.1f}%]")
+
+        # Create comparison plot
+        plot_distorted_comparison(results, class_name, img_basename, model_path.stem)
+
+
+def plot_distorted_comparison(results: dict, class_name: str, img_basename: str, model_name: str):
+    """
+    Create a 4-panel comparison plot showing original and distorted predictions.
+
+    Args:
+        results: Dictionary with keys "Original", "AWGN", "Sim", "SP" containing prediction results
+        class_name: Name of the material class
+        img_basename: Base name of the image file
+        model_name: Name of the model used
+    """
+    # Determine layout based on available results
+    available_distortions = [k for k in ["AWGN", "Sim", "SP"] if k in results]
+    n_plots = 1 + len(available_distortions)  # Original + distortions
+
+    # Create figure with 2 rows: images on top, probability bars on bottom
+    fig = plt.figure(figsize=(5 * n_plots, 10))
+    gs = fig.add_gridspec(2, n_plots, height_ratios=[1.2, 1], hspace=0.3, wspace=0.3)
+
+    # Plot original and each distortion
+    plot_order = ["Original"] + available_distortions
+
+    for i, result_type in enumerate(plot_order):
+        if result_type not in results:
+            continue
+
+        result = results[result_type]
+
+        # Top row: Image
+        ax_img = fig.add_subplot(gs[0, i])
+        ax_img.imshow(result["image"])
+        ax_img.axis("off")
+        ax_img.set_title(f"{result_type}", fontsize=14, fontweight="bold")
+
+        # Bottom row: Probability bars
+        ax_prob = fig.add_subplot(gs[1, i])
+        colors = [
+            "#2ecc71" if j == result["pred_idx"] else "#3498db"
+            for j in range(len(CLASS_NAMES))
+        ]
+        ax_prob.barh(CLASS_NAMES, result["probs"], color=colors)
+        ax_prob.set_xlabel("Probability", fontsize=11)
+
+        pred_label = CLASS_NAMES[result["pred_idx"]]
+        ax_prob.set_title(
+            f"{pred_label}\n({result['confidence'] * 100:.1f}%)",
+            fontsize=12,
+            fontweight="bold"
+        )
+        ax_prob.set_xlim(0, 1)
+        ax_prob.grid(axis="x", alpha=0.3)
+
+    # Overall title
+    fig.suptitle(
+        f"Distorted Image Comparison: {class_name.capitalize()}\nModel: {model_name} | Image: {img_basename}",
+        fontsize=16,
+        fontweight="bold",
+        y=0.98
+    )
+
+    # Save plot
+    plot_filename = f"distorted_comparison_{class_name}_{img_basename}_{model_name}.png"
+    plot_path = plots_dir / plot_filename
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    print(f"\nSaved comparison plot to {plot_path}")
+    plt.close()
+
+
 def evaluate_dark_directories(
     model_path: Path, data_dir: Path, brightening_methods: dict
 ):
@@ -747,6 +935,19 @@ if __name__ == "__main__":
         help="Perform CLAHE parameter sweep over clip_limit and tile_size ranges",
     )
 
+    # Distorted directory comparison mode
+    parser.add_argument(
+        "--compare-distorted",
+        action="store_true",
+        help="Compare first image from each class with distorted variants (AWGN, Sim, SP)",
+    )
+    parser.add_argument(
+        "--distorted-dir",
+        type=str,
+        default="distorted",
+        help="Path to distorted directory (default: distorted)",
+    )
+
     args = parser.parse_args()
 
     model_path = models_dir / args.model
@@ -790,6 +991,24 @@ if __name__ == "__main__":
 
         if results:
             plot_clahe_heatmap(results, args.model, clip_limits, tile_sizes)
+
+    # Distorted directory comparison mode
+    elif args.compare_distorted:
+        print("=" * 70)
+        print("DISTORTED DIRECTORY COMPARISON MODE")
+        print("=" * 70)
+        print(f"Model: {args.model}")
+        print(f"Data directory: {args.data_dir}")
+        print(f"Distorted directory: {args.distorted_dir}")
+
+        data_dir_path = Path(args.data_dir)
+        distorted_dir_path = Path(args.distorted_dir)
+
+        if not distorted_dir_path.exists():
+            print(f"Error: Distorted directory '{distorted_dir_path}' does not exist.")
+            sys.exit(1)
+
+        compare_distorted_images(model_path, data_dir_path, distorted_dir_path)
 
     # Dark directory evaluation mode
     elif args.eval_dark:

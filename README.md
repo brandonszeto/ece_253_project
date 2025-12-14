@@ -1,6 +1,6 @@
 # ECE 253 Project: Material Texture Classification
 
-A deep learning system for classifying material textures using transfer learning with MobileNetV2. This project implements a robust texture classifier that can identify five material types: drywall, grass, metal, stone, and wood.
+A deep learning system for classifying material textures using transfer learning with MobileNetV2. This project implements a robust texture classifier that can identify five material types: drywall, grass, metal, stone, and wood. The relevant release can be found on the main branch.
 
 ## Table of Contents
 - [Project Overview](#project-overview)
@@ -301,10 +301,6 @@ Compare:
 - Epochs: 10
 - Train/Val split: 80/20
 - Random seed: 42 (for reproducibility)
-
-## Results
-
-*[To be added: Validation accuracies, robustness metrics, confusion matrices, example predictions]*
 
 ### Training Curves
 

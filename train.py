@@ -24,6 +24,7 @@ LR = 1e-3
 VAL_SPLIT = 0.2  # 20% of data for validation
 RANDOM_SEED = 42
 AUGMENTATION = "advanced"  # Options: "none", "basic", "advanced"
+INCLUDE_DARK = True  # Set to True to include dark variants (except drywall_dark)
 
 data_dir = Path(
     "data"
@@ -35,12 +36,14 @@ plots_dir = Path("plots")
 models_dir.mkdir(exist_ok=True)
 plots_dir.mkdir(exist_ok=True)
 
-# Model filename includes augmentation level
-MODEL_PATH = models_dir / f"mobilenet_{AUGMENTATION}_aug.pth"
+# Model filename includes augmentation level and dark variant flag
+model_suffix = "_dark" if INCLUDE_DARK else ""
+MODEL_PATH = models_dir / f"mobilenet_{AUGMENTATION}_aug{model_suffix}.pth"
 
 device = get_device()
 print("Using device:", device)
 print(f"Augmentation level: {AUGMENTATION}")
+print(f"Include dark variants: {INCLUDE_DARK}")
 
 train_transform = get_train_transform(augmentation_level=AUGMENTATION)
 val_transform = get_eval_transform()
@@ -66,11 +69,110 @@ class TransformSubset(Dataset):
         return img, label
 
 
-# Load full dataset from data/{drywall,grass,metal,stone,wood}
-full_ds = datasets.ImageFolder(str(data_dir), transform=None)
-print(
-    "ImageFolder classes:", full_ds.classes
-)  # should be ['drywall', 'grass', 'metal', 'stone', 'wood']
+class CombinedDataset(Dataset):
+    """
+    Combines regular and dark variant datasets.
+    Maps both to the same class labels.
+    """
+
+    def __init__(self, datasets_list, transform=None):
+        self.datasets = datasets_list
+        self.transform = transform
+        self.cumulative_sizes = [0]
+        for ds in datasets_list:
+            self.cumulative_sizes.append(self.cumulative_sizes[-1] + len(ds))
+
+    def __len__(self):
+        return self.cumulative_sizes[-1]
+
+    def __getitem__(self, idx):
+        # Find which dataset this index belongs to
+        dataset_idx = 0
+        for i, cumsum in enumerate(self.cumulative_sizes[1:]):
+            if idx < cumsum:
+                dataset_idx = i
+                break
+
+        # Get item from appropriate dataset
+        local_idx = idx - self.cumulative_sizes[dataset_idx]
+        img, label = self.datasets[dataset_idx][local_idx]
+
+        if self.transform is not None:
+            img = self.transform(img)
+
+        return img, label
+
+
+# Load dataset(s)
+if INCLUDE_DARK:
+    print("\n" + "=" * 70)
+    print("Loading regular and dark variant datasets")
+    print("=" * 70)
+
+    # Load regular dataset
+    regular_ds = datasets.ImageFolder(str(data_dir), transform=None)
+    print(f"Regular dataset classes: {regular_ds.classes}")
+    print(f"Regular dataset size: {len(regular_ds)}")
+
+    # Create a custom dataset that includes dark variants
+    # We need to manually load dark directories and map them to the same class indices
+    import os
+
+    from PIL import Image
+
+    class DarkVariantDataset(Dataset):
+        def __init__(self, data_dir, class_names, transform=None):
+            self.data_dir = Path(data_dir)
+            self.class_names = class_names
+            self.transform = transform
+            self.samples = []
+
+            # Load images from *_dark directories (except drywall_dark which doesn't exist)
+            for class_name in class_names:
+                if class_name == "drywall":
+                    continue  # Skip drywall_dark as it doesn't exist
+
+                dark_dir = self.data_dir / f"{class_name}_dark"
+                if not dark_dir.exists():
+                    print(f"Warning: {dark_dir} does not exist, skipping")
+                    continue
+
+                class_idx = class_names.index(class_name)
+                image_files = (
+                    list(dark_dir.glob("*.jpg"))
+                    + list(dark_dir.glob("*.png"))
+                    + list(dark_dir.glob("*.jpeg"))
+                )
+
+                for img_path in image_files:
+                    self.samples.append((str(img_path), class_idx))
+
+                print(
+                    f"Loaded {len(image_files)} images from {dark_dir.name} (class: {class_name})"
+                )
+
+        def __len__(self):
+            return len(self.samples)
+
+        def __getitem__(self, idx):
+            img_path, label = self.samples[idx]
+            img = Image.open(img_path).convert("RGB")
+            return img, label
+
+    dark_ds = DarkVariantDataset(data_dir, CLASS_NAMES, transform=None)
+    print(f"\nDark variant dataset size: {len(dark_ds)}")
+    print(f"Total combined size: {len(regular_ds) + len(dark_ds)}")
+
+    # Combine datasets
+    full_ds = CombinedDataset([regular_ds, dark_ds], transform=None)
+
+else:
+    # Load only regular dataset
+    full_ds = datasets.ImageFolder(str(data_dir), transform=None)
+    print(
+        "ImageFolder classes:", full_ds.classes
+    )  # should be ['drywall', 'grass', 'metal', 'stone', 'wood']
+
 print("Model CLASS_NAMES   :", CLASS_NAMES)
 
 num_samples = len(full_ds)
@@ -173,9 +275,12 @@ lines1, labels1 = ax1.get_legend_handles_labels()
 lines2, labels2 = ax2.get_legend_handles_labels()
 ax1.legend(lines1 + lines2, labels1 + labels2, loc="center right")
 
-plt.title(f"Training Loss and Validation Accuracy ({AUGMENTATION} augmentation)")
+title_suffix = " with dark variants" if INCLUDE_DARK else ""
+plt.title(
+    f"Training Loss and Validation Accuracy ({AUGMENTATION} augmentation{title_suffix})"
+)
 plt.tight_layout()
-plot_path = plots_dir / f"training_curve_{AUGMENTATION}_aug.png"
+plot_path = plots_dir / f"training_curve_{AUGMENTATION}_aug{model_suffix}.png"
 plt.savefig(plot_path)
 print(f"Saved training curve to {plot_path}")
 plt.show()
